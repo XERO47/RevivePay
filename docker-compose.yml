@@ -1,0 +1,16 @@
+services:
+  revivepay:
+    build: .
+    ports:
+      - "3001:3001"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_PATH: /data/revivepay.db
+      PUBLIC_APP_URL: http://localhost:3001
+    volumes:
+      - revivepay-data:/data
+
+volumes:
+  revivepay-data:
