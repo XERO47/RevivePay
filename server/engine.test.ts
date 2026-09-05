@@ -42,6 +42,7 @@ test("high-value action is gated and becomes an executable demo link after appro
   const result = await engine.approveAndExecuteAction("rcv_0035", action.id);
   assert.match(result.link?.url ?? "", /^http:\/\/test\.local\/pay\//);
   assert.equal(database.getCase("rcv_0035")?.status, "awaiting_payment");
+  assert.equal(database.getAudit("rcv_0035").some((item) => item.title === "Recovery message sent"), true);
 });
 
 test("a disputed payment stops automation", async () => {

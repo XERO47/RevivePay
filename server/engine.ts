@@ -31,6 +31,11 @@ export async function approveAndExecuteAction(caseId: string, actionId: string) 
     updateCase(caseId, { paymentUrl: link.url, status: "awaiting_payment", contactAttempts: recoveryCase.contactAttempts + 1 });
     updateAction(action.id, { status: "executed", executedAt: new Date().toISOString(), externalId: link.id });
     addAudit(caseId, "execution", "Recovery action executed", `Secure payment link created through the ${link.mode.replaceAll("_", " ")}.`);
+    addAudit(caseId, "agent_message", "Recovery message sent", action.content, {
+      channel: action.channel,
+      actionId: action.id,
+      paymentUrl: link.url,
+    });
     return { link };
   }
 

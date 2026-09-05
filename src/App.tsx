@@ -110,10 +110,13 @@ function App() {
 }
 
 function MerchantApp() {
-  const requestedPage = new URLSearchParams(window.location.search).get("page") as Page | null;
+  const searchParams = new URLSearchParams(window.location.search);
+  const requestedPage = searchParams.get("page") as Page | null;
+  const requestedSimulatorCase = searchParams.get("case");
   const [page, setPage] = useState<Page>(navigation.some((item) => item.id === requestedPage) ? requestedPage! : "overview");
   const [data, setData] = useState<DashboardData | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [simulatorCaseId, setSimulatorCaseId] = useState<string | null>(requestedSimulatorCase);
   const [mobileNav, setMobileNav] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -188,25 +191,32 @@ function MerchantApp() {
         <div className="page-content">
           {page === "overview" && <Overview data={data} onSelect={setSelected} onNavigate={setPage} />}
           {page === "queue" && <RecoveryQueue cases={data.cases} onSelect={setSelected} />}
-          {page === "simulator" && <CustomerSimulator data={data} onChanged={refresh} />}
+          {page === "simulator" && <CustomerSimulator data={data} initialCaseId={simulatorCaseId} onChanged={refresh} onOpenCase={setSelected} />}
           {page === "evaluation" && <Evaluation data={data} />}
           {page === "audit" && <AuditTrail items={data.audit} onSelect={setSelected} />}
           {page === "guardrails" && <Guardrails onSaved={refresh} />}
         </div>
       </main>
 
-      {selected && <CaseDrawer caseId={selected} onClose={() => setSelected(null)} onChanged={refresh} />}
+      {selected && <CaseDrawer caseId={selected} onClose={() => setSelected(null)} onChanged={refresh} onOpenSimulator={(id) => { setSelected(null); setSimulatorCaseId(id); setPage("simulator"); }} />}
       {notice && <div className="toast"><Check size={17} />{notice}<button onClick={() => setNotice(null)}><X size={15} /></button></div>}
     </div>
   );
 }
 
-function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> }) {
+function CustomerSimulator({ data, initialCaseId, onChanged, onOpenCase }: { data: DashboardData; initialCaseId: string | null; onChanged: () => Promise<void>; onOpenCase: (id: string) => void }) {
   const availableCases = useMemo(
-    () => data.cases.filter((item) => !["recovered", "opted_out"].includes(item.status)).slice(0, 18),
-    [data.cases],
+    () => {
+      const active = data.cases.filter((item) => !["recovered", "opted_out"].includes(item.status));
+      const preferred = active.find((item) => item.id === initialCaseId) ?? active.find((item) => item.paymentUrl);
+      return preferred ? [preferred, ...active.filter((item) => item.id !== preferred.id)].slice(0, 18) : active.slice(0, 18);
+    },
+    [data.cases, initialCaseId],
   );
-  const [caseId, setCaseId] = useState(availableCases[0]?.id ?? data.cases[0]?.id ?? "");
+  const defaultCaseId = initialCaseId && availableCases.some((item) => item.id === initialCaseId)
+    ? initialCaseId
+    : availableCases.find((item) => item.paymentUrl)?.id ?? availableCases[0]?.id ?? data.cases[0]?.id ?? "";
+  const [caseId, setCaseId] = useState(defaultCaseId);
   const [detail, setDetail] = useState<{ case: RecoveryCase; actions: RecoveryAction[]; audit: AuditItem[] } | null>(null);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -218,7 +228,15 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
     setDetail(await request(`/api/cases/${nextCaseId}`));
   };
 
-  useEffect(() => { void load(); }, [caseId]);
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => { void load(); }, 3_000);
+    return () => window.clearInterval(interval);
+  }, [caseId]);
+
+  useEffect(() => {
+    if (initialCaseId && availableCases.some((item) => item.id === initialCaseId)) setCaseId(initialCaseId);
+  }, [initialCaseId]);
 
   const chooseCase = (nextCaseId: string) => {
     setCaseId(nextCaseId);
@@ -249,7 +267,7 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
   const currentCase = detail?.case;
   const latestAction = detail?.actions[0];
   const conversation = detail?.audit
-    .filter((item) => ["customer", "decision", "guardrail", "money"].includes(item.category))
+    .filter((item) => ["agent_message", "customer", "decision", "guardrail", "money"].includes(item.category))
     .slice(0, 8)
     .reverse() ?? [];
 
@@ -285,10 +303,12 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
             </div>
             <div className="conversation-body">
               <div className="chat-day"><span>Recovery conversation</span></div>
-              <div className="bubble agent-bubble"><span>RevivePay agent</span><p>{latestAction?.content ?? `Hi ${currentCase.customerName.split(" ")[0]}, we need your help completing this payment.`}</p><time>{formatDate(latestAction?.createdAt ?? currentCase.createdAt)}</time></div>
+              {!conversation.some((item) => item.category === "agent_message") && <div className="bubble agent-bubble"><span>RevivePay agent · seeded preview</span><p>{latestAction?.content ?? `Hi ${currentCase.customerName.split(" ")[0]}, we need your help completing this payment.`}</p><time>{formatDate(latestAction?.createdAt ?? currentCase.createdAt)}</time></div>}
               {conversation.map((item) => item.category === "customer"
                 ? <div className="bubble customer-bubble" key={item.id}><span>Customer</span><p>{item.detail}</p><time>{formatDate(item.createdAt)}</time></div>
-                : <div className={`chat-system system-${item.category}`} key={item.id}><ShieldCheck size={13} /><div><strong>{item.title}</strong><span>{item.detail}</span></div></div>
+                : item.category === "agent_message"
+                  ? <div className="bubble agent-bubble sent-message" key={item.id}><span>RevivePay agent · sent</span><p>{item.detail}</p><time>{formatDate(item.createdAt)}</time></div>
+                  : <div className={`chat-system system-${item.category}`} key={item.id}><ShieldCheck size={13} /><div><strong>{item.title}</strong><span>{item.detail}</span></div></div>
               )}
               {!conversation.length && <div className="chat-placeholder"><MessageSquareText size={19} /><span>Send a reply below to start the simulation.</span></div>}
             </div>
@@ -315,7 +335,11 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
           <article className="panel simulator-context">
             <span className="panel-kicker">Case context</span><h2>{currentCase?.diagnosis ?? "Loading case"}</h2>
             <dl><div><dt>Recoverability</dt><dd>{currentCase?.recoverability ?? 0}%</dd></div><div><dt>Contact attempts</dt><dd>{currentCase?.contactAttempts ?? 0} / 3</dd></div><div><dt>Recommended next step</dt><dd>{currentCase ? actionLabels[currentCase.recommendedAction] : "—"}</dd></div></dl>
-            {currentCase?.paymentUrl && !["recovered", "escalated", "opted_out"].includes(currentCase.status) && <a className="primary-button simulator-pay-link" href={currentCase.paymentUrl} target="_blank" rel="noreferrer"><BadgeIndianRupee size={16} />Open customer payment page</a>}
+            {currentCase?.paymentUrl && !["recovered", "escalated", "opted_out"].includes(currentCase.status)
+              ? <a className="primary-button simulator-pay-link" href={currentCase.paymentUrl} target="_blank" rel="noreferrer"><BadgeIndianRupee size={16} />Open customer payment page</a>
+              : currentCase?.status === "needs_review"
+                ? <div className="payment-link-pending"><Clock3 size={15} /><div><strong>Payment link awaiting approval</strong><span>Approve the proposed action before the customer can pay.</span></div><button onClick={() => onOpenCase(currentCase.id)}>Review action</button></div>
+                : null}
           </article>
 
           <article className="llm-note">
@@ -556,7 +580,7 @@ function Toggle({ label, help, checked, onChange, locked }: { label: string; hel
   return <label className="policy-field"><div><strong>{label}</strong><span>{help}</span></div><button type="button" className={`toggle ${checked ? "on" : ""}`} onClick={() => !locked && onChange(!checked)} aria-label={label}><i /></button></label>;
 }
 
-function CaseDrawer({ caseId, onClose, onChanged }: { caseId: string; onClose: () => void; onChanged: () => Promise<void> }) {
+function CaseDrawer({ caseId, onClose, onChanged, onOpenSimulator }: { caseId: string; onClose: () => void; onChanged: () => Promise<void>; onOpenSimulator: (id: string) => void }) {
   const [detail, setDetail] = useState<{ case: RecoveryCase; actions: RecoveryAction[]; audit: AuditItem[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState("");
@@ -594,6 +618,14 @@ function CaseDrawer({ caseId, onClose, onChanged }: { caseId: string; onClose: (
         <section className="drawer-section"><div className="section-title"><h3>Proposed action</h3><span>Policy evaluated</span></div>
           {detail.actions.map((action) => <div className="action-card" key={action.id}><div className="action-head"><div className="action-icon"><Send size={16} /></div><div><strong>{actionLabels[action.type] ?? action.type}</strong><span>{action.channel} · {action.status}</span></div><span className={`action-status action-${action.status}`}>{action.status}</span></div><p className="message-preview">“{action.content}”</p><div className="policy-check"><ShieldCheck size={15} /><span>{action.policyDecision}</span></div>{action.status === "proposed" && <button className="primary-button wide" disabled={busy} onClick={() => void approve(action.id)}>{busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}Approve and execute</button>}{action.externalId && <small className="external-id"><Link2 size={13} />{action.externalId}</small>}</div>)}
         </section>
+
+        {detail.case.paymentUrl && !["recovered", "escalated", "opted_out"].includes(detail.case.status) && <section className="drawer-section drawer-payment-card">
+          <div className="drawer-payment-copy"><div><BadgeIndianRupee size={18} /></div><p><strong>Customer payment link is live</strong><span>The approved message and this link now appear for the same customer in the simulator.</span></p></div>
+          <div className="drawer-payment-actions">
+            <a className="primary-button" href={detail.case.paymentUrl} target="_blank" rel="noreferrer"><Link2 size={15} />Open payment page</a>
+            <button className="secondary-button" onClick={() => onOpenSimulator(detail.case.id)}><MessageSquareText size={15} />View in customer simulator</button>
+          </div>
+        </section>}
 
         <section className="drawer-section"><div className="section-title"><h3>Customer reply simulator</h3><span>{classification ? `${classification.modelSource.replaceAll("_", " ")} · ${Math.round(classification.confidence * 100)}%` : "AI classified"}</span></div><div className="reply-composer"><textarea value={reply} onChange={(event) => setReply(event.target.value)} placeholder="Type a customer reply…" /><button className="icon-button send-button" disabled={busy || !reply.trim()} onClick={() => void sendReply()}><Send size={17} /></button></div><div className="reply-samples">{["I will pay on Monday", "This invoice is not mine", "Please stop contacting me"].map((sample) => <button key={sample} onClick={() => void sendReply(sample)}>{sample}</button>)}</div>{classification && <div className="classification-result"><Sparkles size={15} /><span>Detected intent: <strong>{classification.intent.replaceAll("_", " ")}</strong></span></div>}</section>
 
