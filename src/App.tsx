@@ -32,11 +32,12 @@ import {
 } from "lucide-react";
 import type { AuditItem, DashboardData, Policy, RecoveryAction, RecoveryCase } from "./types";
 
-type Page = "overview" | "queue" | "evaluation" | "audit" | "guardrails";
+type Page = "overview" | "queue" | "simulator" | "evaluation" | "audit" | "guardrails";
 
 const navigation: { id: Page; label: string; icon: typeof Activity }[] = [
   { id: "overview", label: "Command centre", icon: LayoutDashboard },
   { id: "queue", label: "Recovery queue", icon: Inbox },
+  { id: "simulator", label: "Customer simulator", icon: MessageSquareText },
   { id: "evaluation", label: "Evaluation", icon: BarChart3 },
   { id: "audit", label: "Audit trail", icon: FileText },
   { id: "guardrails", label: "Guardrails", icon: ShieldCheck },
@@ -109,7 +110,8 @@ function App() {
 }
 
 function MerchantApp() {
-  const [page, setPage] = useState<Page>("overview");
+  const requestedPage = new URLSearchParams(window.location.search).get("page") as Page | null;
+  const [page, setPage] = useState<Page>(navigation.some((item) => item.id === requestedPage) ? requestedPage! : "overview");
   const [data, setData] = useState<DashboardData | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
@@ -186,6 +188,7 @@ function MerchantApp() {
         <div className="page-content">
           {page === "overview" && <Overview data={data} onSelect={setSelected} onNavigate={setPage} />}
           {page === "queue" && <RecoveryQueue cases={data.cases} onSelect={setSelected} />}
+          {page === "simulator" && <CustomerSimulator data={data} onChanged={refresh} />}
           {page === "evaluation" && <Evaluation data={data} />}
           {page === "audit" && <AuditTrail items={data.audit} onSelect={setSelected} />}
           {page === "guardrails" && <Guardrails onSaved={refresh} />}
@@ -196,6 +199,146 @@ function MerchantApp() {
       {notice && <div className="toast"><Check size={17} />{notice}<button onClick={() => setNotice(null)}><X size={15} /></button></div>}
     </div>
   );
+}
+
+function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> }) {
+  const availableCases = useMemo(
+    () => data.cases.filter((item) => !["recovered", "opted_out"].includes(item.status)).slice(0, 18),
+    [data.cases],
+  );
+  const [caseId, setCaseId] = useState(availableCases[0]?.id ?? data.cases[0]?.id ?? "");
+  const [detail, setDetail] = useState<{ case: RecoveryCase; actions: RecoveryAction[]; audit: AuditItem[] } | null>(null);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ intent: string; confidence: number; summary: string; modelSource: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (nextCaseId = caseId) => {
+    if (!nextCaseId) return;
+    setDetail(await request(`/api/cases/${nextCaseId}`));
+  };
+
+  useEffect(() => { void load(); }, [caseId]);
+
+  const chooseCase = (nextCaseId: string) => {
+    setCaseId(nextCaseId);
+    setResult(null);
+    setError(null);
+  };
+
+  const send = async (text = message) => {
+    if (!text.trim() || !caseId) return;
+    setSending(true);
+    setError(null);
+    try {
+      const response = await request<{ classification: { intent: string; confidence: number; summary: string; modelSource: string } }>(`/api/cases/${caseId}/reply`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      setResult(response.classification);
+      setMessage("");
+      await load();
+      await onChanged();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "The reply could not be processed.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const currentCase = detail?.case;
+  const latestAction = detail?.actions[0];
+  const conversation = detail?.audit
+    .filter((item) => ["customer", "decision", "guardrail", "money"].includes(item.category))
+    .slice(0, 8)
+    .reverse() ?? [];
+
+  return (
+    <>
+      <section className="page-heading compact simulator-heading">
+        <div><span className="eyebrow">Interactive demo lab</span><h1>Customer response simulator</h1><p>Act as the customer and watch the recovery agent interpret, decide, and stop safely.</p></div>
+        <div className={`ai-engine-badge ${data.integration.openai ? "connected" : "fallback"}`}>
+          <Bot size={17} /><div><span>Reply intelligence</span><strong>{data.integration.openai ? "OpenAI Responses API" : "Deterministic safety fallback"}</strong></div><i />
+        </div>
+      </section>
+
+      <section className="simulator-layout">
+        <article className="panel simulator-cases">
+          <div className="simulator-section-head"><div><span className="panel-kicker">Test identities</span><h2>Choose a customer</h2></div><span>{availableCases.length} active</span></div>
+          <div className="simulator-case-list">
+            {availableCases.map((item) => (
+              <button key={item.id} className={caseId === item.id ? "selected" : ""} onClick={() => chooseCase(item.id)}>
+                <div className="sim-avatar">{item.customerName.split(" ").map((part) => part[0]).join("")}</div>
+                <div><strong>{item.customerName}</strong><span>{item.diagnosis}</span></div>
+                <div><strong>{formatMoney(item.amount)}</strong><StatusPill status={item.status} /></div>
+              </button>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel conversation-panel">
+          {!currentCase ? <div className="page-loader"><Loader2 className="spin" /></div> : <>
+            <div className="conversation-head">
+              <div className="sim-avatar large">{currentCase.customerName.split(" ").map((part) => part[0]).join("")}</div>
+              <div><strong>{currentCase.customerName}</strong><span>{currentCase.customerPhone} · {currentCase.externalId}</span></div>
+              <div><strong>{formatMoney(currentCase.amount)}</strong><StatusPill status={currentCase.status} /></div>
+            </div>
+            <div className="conversation-body">
+              <div className="chat-day"><span>Recovery conversation</span></div>
+              <div className="bubble agent-bubble"><span>RevivePay agent</span><p>{latestAction?.content ?? `Hi ${currentCase.customerName.split(" ")[0]}, we need your help completing this payment.`}</p><time>{formatDate(latestAction?.createdAt ?? currentCase.createdAt)}</time></div>
+              {conversation.map((item) => item.category === "customer"
+                ? <div className="bubble customer-bubble" key={item.id}><span>Customer</span><p>{item.detail}</p><time>{formatDate(item.createdAt)}</time></div>
+                : <div className={`chat-system system-${item.category}`} key={item.id}><ShieldCheck size={13} /><div><strong>{item.title}</strong><span>{item.detail}</span></div></div>
+              )}
+              {!conversation.length && <div className="chat-placeholder"><MessageSquareText size={19} /><span>Send a reply below to start the simulation.</span></div>}
+            </div>
+            <div className="quick-replies">
+              <span>Try a scenario</span>
+              <div>
+                {["I will pay on Monday", "This payment is not mine", "I lost my job and cannot afford this", "Please stop contacting me", "Can I pay using UPI?"].map((sample) => <button key={sample} disabled={sending} onClick={() => void send(sample)}>{sample}</button>)}
+              </div>
+            </div>
+            <div className="simulator-composer"><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Write a reply as the customer…" /><button disabled={sending || !message.trim()} onClick={() => void send()}>{sending ? <Loader2 className="spin" size={17} /> : <Send size={17} />}Send reply</button></div>
+          </>}
+        </article>
+
+        <aside className="simulator-inspector">
+          <article className="panel inspector-card">
+            <div className="simulator-section-head"><div><span className="panel-kicker">Live reasoning output</span><h2>Agent interpretation</h2></div><Sparkles size={18} /></div>
+            {result ? <>
+              <div className="intent-result"><span>Detected intent</span><strong>{result.intent.replaceAll("_", " ")}</strong><div><i style={{ width: `${result.confidence * 100}%` }} /></div><small>{Math.round(result.confidence * 100)}% confidence · {result.modelSource.replaceAll("_", " ")}</small></div>
+              <p className="intent-summary">{result.summary}</p>
+              <OutcomeExplanation intent={result.intent} />
+            </> : <div className="inspector-empty"><Bot size={25} /><strong>Waiting for a reply</strong><span>The classifier output and resulting guardrail decision will appear here.</span></div>}
+          </article>
+
+          <article className="panel simulator-context">
+            <span className="panel-kicker">Case context</span><h2>{currentCase?.diagnosis ?? "Loading case"}</h2>
+            <dl><div><dt>Recoverability</dt><dd>{currentCase?.recoverability ?? 0}%</dd></div><div><dt>Contact attempts</dt><dd>{currentCase?.contactAttempts ?? 0} / 3</dd></div><div><dt>Recommended next step</dt><dd>{currentCase ? actionLabels[currentCase.recommendedAction] : "—"}</dd></div></dl>
+            {currentCase?.paymentUrl && !["recovered", "escalated", "opted_out"].includes(currentCase.status) && <a className="primary-button simulator-pay-link" href={currentCase.paymentUrl} target="_blank" rel="noreferrer"><BadgeIndianRupee size={16} />Open customer payment page</a>}
+          </article>
+
+          <article className="llm-note">
+            <ShieldCheck size={17} /><p><strong>The model cannot move money</strong><span>AI only returns typed intent data. The deterministic policy engine decides whether recovery continues, waits, or stops.</span></p>
+          </article>
+          {error && <div className="error-box"><TriangleAlert size={16} />{error}</div>}
+        </aside>
+      </section>
+    </>
+  );
+}
+
+function OutcomeExplanation({ intent }: { intent: string }) {
+  const outcomes: Record<string, { title: string; detail: string; tone: string }> = {
+    promise_to_pay: { title: "Wait until promised date", detail: "Contact is suppressed until the recorded promise date.", tone: "wait" },
+    dispute: { title: "Stop and escalate", detail: "All recovery actions are cancelled for human review.", tone: "stop" },
+    financial_hardship: { title: "Pause for human support", detail: "Automated contact stops; no payment pressure is applied.", tone: "stop" },
+    opt_out: { title: "Contact stopped", detail: "The customer is immediately removed from automated recovery.", tone: "stop" },
+    payment_question: { title: "Answer without pressure", detail: "The case stays active; no irreversible action is taken.", tone: "safe" },
+    general: { title: "Hold for review", detail: "Confidence is insufficient, so the agent takes no money action.", tone: "safe" },
+  };
+  const outcome = outcomes[intent] ?? outcomes.general;
+  return <div className={`outcome-box outcome-${outcome.tone}`}><ShieldCheck size={16} /><p><strong>{outcome.title}</strong><span>{outcome.detail}</span></p></div>;
 }
 
 function Overview({ data, onSelect, onNavigate }: { data: DashboardData; onSelect: (id: string) => void; onNavigate: (page: Page) => void }) {
