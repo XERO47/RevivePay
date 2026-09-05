@@ -72,10 +72,10 @@ Create an OpenRouter API key and add it to `.env`:
 
 ```dotenv
 OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=openrouter/free
+OPENROUTER_MODEL=liquid/lfm-2.5-2.6b:free
 ```
 
-`openrouter/free` automatically selects an available zero-cost model that supports the request. RevivePay records the actual model returned by OpenRouter in the simulator. If the router is rate-limited, unavailable, or returns malformed output, the application fails over to OpenAI when configured and then to the conservative local classifier.
+The default is a small, fast free model that advertises structured-output support in OpenRouter's model catalog. You can switch to `openrouter/free` to automatically select from the full free pool. RevivePay records the actual model returned by OpenRouter in the simulator. If the selected model is rate-limited, unavailable, or returns malformed output, the application fails over to OpenAI when configured and then to the conservative local classifier.
 
 The key remains server-side and is never included in the browser bundle.
 

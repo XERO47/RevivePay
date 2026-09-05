@@ -16,6 +16,18 @@ const replySchema = {
   required: ["intent", "promisedDate", "confidence", "summary"],
 } as const;
 
+const classificationInstructions = [
+  "Classify a customer's reply to a merchant's payment-recovery message.",
+  "promise_to_pay means an explicit commitment to pay now or in the future, such as 'I will pay Monday'.",
+  "payment_question is only a question about amount, link, invoice, UPI, card, or how to pay; it is not a commitment.",
+  "dispute means the customer denies the transaction, ownership, amount, delivery, or validity.",
+  "financial_hardship means inability to pay because of financial distress.",
+  "opt_out means the customer asks for contact to stop.",
+  "Never infer a promise unless the customer clearly commits to payment.",
+  "Treat disputes, hardship, and opt-outs conservatively because they stop automation.",
+  "Use an ISO YYYY-MM-DD promisedDate only for promise_to_pay when a date can be resolved; otherwise null.",
+].join(" ");
+
 function fallbackClassify(text: string): ReplyClassification {
   const normalized = text.toLowerCase();
   const isoDate = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/)?.[1] ?? null;
@@ -44,11 +56,24 @@ function fallbackClassify(text: string): ReplyClassification {
 
 function parseJsonContent(content: string) {
   const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  return JSON.parse(cleaned) as Omit<ReplyClassification, "modelSource" | "modelName">;
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end <= start) throw new Error("The model response did not contain a JSON object.");
+  const objectText = cleaned.slice(start, end + 1);
+  try {
+    return JSON.parse(objectText) as Omit<ReplyClassification, "modelSource" | "modelName">;
+  } catch {
+    // Some free models honor the schema semantically but emit JS-style keys or trailing commas.
+    const repaired = objectText
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":')
+      .replace(/:\s*'([^']*)'/g, ': "$1"')
+      .replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(repaired) as Omit<ReplyClassification, "modelSource" | "modelName">;
+  }
 }
 
 async function classifyWithOpenRouter(text: string): Promise<ReplyClassification> {
-  const model = process.env.OPENROUTER_MODEL ?? "openrouter/free";
+  const model = process.env.OPENROUTER_MODEL ?? "liquid/lfm-2.5-2.6b:free";
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -60,16 +85,12 @@ async function classifyWithOpenRouter(text: string): Promise<ReplyClassification
     body: JSON.stringify({
       model,
       temperature: 0.1,
-      max_tokens: 250,
+      // Free reasoning models may spend part of this budget before emitting the JSON payload.
+      max_tokens: 700,
       messages: [
         {
           role: "system",
-          content: [
-            "Classify a customer's reply to a merchant's payment-recovery message.",
-            "Never infer a promise-to-pay unless the customer clearly commits to payment.",
-            "Treat disputes, hardship, and opt-outs conservatively because they stop automation.",
-            "Use an ISO YYYY-MM-DD promisedDate only when a date can be resolved; otherwise null.",
-          ].join(" "),
+          content: classificationInstructions,
         },
         { role: "user", content: text },
       ],
@@ -78,7 +99,7 @@ async function classifyWithOpenRouter(text: string): Promise<ReplyClassification
         json_schema: { name: "recovery_reply", strict: true, schema: replySchema },
       },
     }),
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) {
     const body = await response.text();
@@ -90,7 +111,12 @@ async function classifyWithOpenRouter(text: string): Promise<ReplyClassification
   };
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenRouter returned no classification content.");
-  return { ...parseJsonContent(content), modelSource: "openrouter", modelName: data.model ?? model };
+  const parsed = parseJsonContent(content);
+  // Enforce a cross-field invariant that JSON Schema cannot express reliably across free models.
+  if (parsed.promisedDate && parsed.intent === "payment_question" && /\b(i\s*(?:will|'ll)|we\s*(?:will|'ll)|going to)\s+pay\b/i.test(text)) {
+    parsed.intent = "promise_to_pay";
+  }
+  return { ...parsed, modelSource: "openrouter", modelName: data.model ?? model };
 }
 
 export async function classifyReply(text: string): Promise<ReplyClassification> {
@@ -109,12 +135,7 @@ export async function classifyReply(text: string): Promise<ReplyClassification> 
     const response = await client.responses.create({
       model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
       store: false,
-      instructions: [
-        "Classify a customer's reply to a merchant's payment-recovery message.",
-        "Never infer a promise-to-pay unless the customer clearly commits to payment.",
-        "Treat disputes, hardship, and opt-outs conservatively because they stop automation.",
-        "Use an ISO YYYY-MM-DD promisedDate only when a date can be resolved; otherwise null.",
-      ].join(" "),
+      instructions: classificationInstructions,
       input: text,
       text: {
         format: {
