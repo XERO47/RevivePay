@@ -343,6 +343,13 @@ function OutcomeExplanation({ intent }: { intent: string }) {
 
 function Overview({ data, onSelect, onNavigate }: { data: DashboardData; onSelect: (id: string) => void; onNavigate: (page: Page) => void }) {
   const priorityCases = data.cases.filter((item) => item.status === "needs_review").slice(0, 4);
+  const activityCaseIds = Array.from(new Set(data.audit
+    .filter((item) => item.caseId && ["customer", "decision", "guardrail", "money"].includes(item.category))
+    .map((item) => item.caseId as string)));
+  const liveCases = activityCaseIds
+    .map((id) => data.cases.find((item) => item.id === id))
+    .filter((item): item is RecoveryCase => Boolean(item))
+    .slice(0, 4);
   const maxDay = Math.max(...data.recoveredByDay.map((day) => day.value), 1);
   return (
     <>
@@ -394,6 +401,19 @@ function Overview({ data, onSelect, onNavigate }: { data: DashboardData; onSelec
         {priorityCases.length ? <div className="case-list">
           {priorityCases.map((item) => <CaseRow key={item.id} item={item} onClick={() => onSelect(item.id)} />)}
         </div> : <EmptyState text="No actions need merchant approval." />}
+      </section>
+
+      <section className="panel live-updates-panel">
+        <div className="panel-header"><div><span className="panel-kicker">State synchronization</span><h2>Live customer updates</h2></div><button className="text-button" onClick={() => onNavigate("simulator")}>Open simulator <ChevronRight size={15} /></button></div>
+        {liveCases.length ? <div className="live-update-grid">{liveCases.map((item) => {
+          const customerReply = data.audit.find((audit) => audit.caseId === item.id && audit.category === "customer");
+          return <button className="live-update-card" key={item.id} onClick={() => onSelect(item.id)}>
+            <div className="live-update-head"><div className="sim-avatar">{item.customerName.split(" ").map((part) => part[0]).join("")}</div><div><strong>{item.customerName}</strong><span>{item.externalId}</span></div><ChevronRight size={15} /></div>
+            <p>{customerReply ? `“${customerReply.detail}”` : item.diagnosis}</p>
+            <div className="live-update-foot"><StatusPill status={item.status} /><strong>{formatMoney(item.amount)}</strong></div>
+            {item.promiseDate && <small><Clock3 size={12} />Promised for {new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(new Date(item.promiseDate))}</small>}
+          </button>;
+        })}</div> : <div className="updates-empty"><MessageSquareText size={18} /><div><strong>No customer replies yet</strong><span>Send a reply in the simulator; its resulting case state will appear here immediately.</span></div></div>}
       </section>
     </>
   );

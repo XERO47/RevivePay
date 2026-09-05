@@ -26,6 +26,9 @@ const classificationInstructions = [
   "Never infer a promise unless the customer clearly commits to payment.",
   "Treat disputes, hardship, and opt-outs conservatively because they stop automation.",
   "Use an ISO YYYY-MM-DD promisedDate only for promise_to_pay when a date can be resolved; otherwise null.",
+  "Return JSON only with exactly intent, promisedDate, confidence, and summary.",
+  "intent must be one of promise_to_pay, dispute, financial_hardship, opt_out, payment_question, general.",
+  "confidence must be a number from 0 to 1, not a word.",
 ].join(" ");
 
 function fallbackClassify(text: string): ReplyClassification {
@@ -72,6 +75,39 @@ function parseJsonContent(content: string) {
   }
 }
 
+function normalizeModelClassification(raw: Record<string, unknown>, text: string) {
+  const allowedIntents = ["promise_to_pay", "dispute", "financial_hardship", "opt_out", "payment_question", "general"] as const;
+  const fallback = fallbackClassify(text);
+  const rawIntent = typeof raw.intent === "string" ? raw.intent : "";
+  let intent = allowedIntents.includes(rawIntent as typeof allowedIntents[number])
+    ? rawIntent as typeof allowedIntents[number]
+    : fallback.intent;
+
+  // Safety-critical local checks can only make the workflow more conservative.
+  if (["dispute", "financial_hardship", "opt_out"].includes(fallback.intent)) intent = fallback.intent;
+  if (/\b(i\s*(?:will|'ll)|we\s*(?:will|'ll)|going to)\s+pay\b/i.test(text)) intent = "promise_to_pay";
+
+  const rawConfidence = typeof raw.confidence === "number"
+    ? raw.confidence
+    : typeof raw.confidence === "string" && /^\d+(?:\.\d+)?$/.test(raw.confidence)
+      ? Number(raw.confidence)
+      : typeof raw.confidence === "string" && raw.confidence.toLowerCase() === "high"
+        ? 0.9
+        : 0.7;
+  const promisedDate = intent === "promise_to_pay" && typeof raw.promisedDate === "string"
+    ? raw.promisedDate
+    : intent === "promise_to_pay"
+      ? fallback.promisedDate
+      : null;
+
+  return {
+    intent,
+    promisedDate,
+    confidence: Math.max(0, Math.min(1, rawConfidence)),
+    summary: typeof raw.summary === "string" ? raw.summary : fallback.summary,
+  };
+}
+
 async function classifyWithOpenRouter(text: string): Promise<ReplyClassification> {
   const model = process.env.OPENROUTER_MODEL ?? "liquid/lfm-2.5-2.6b:free";
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -94,10 +130,9 @@ async function classifyWithOpenRouter(text: string): Promise<ReplyClassification
         },
         { role: "user", content: text },
       ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "recovery_reply", strict: true, schema: replySchema },
-      },
+      // JSON mode is more consistently honored by small free models; the result is
+      // validated and normalized server-side before the policy engine sees it.
+      response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(20_000),
   });
@@ -111,11 +146,7 @@ async function classifyWithOpenRouter(text: string): Promise<ReplyClassification
   };
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenRouter returned no classification content.");
-  const parsed = parseJsonContent(content);
-  // Enforce a cross-field invariant that JSON Schema cannot express reliably across free models.
-  if (parsed.promisedDate && parsed.intent === "payment_question" && /\b(i\s*(?:will|'ll)|we\s*(?:will|'ll)|going to)\s+pay\b/i.test(text)) {
-    parsed.intent = "promise_to_pay";
-  }
+  const parsed = normalizeModelClassification(parseJsonContent(content) as unknown as Record<string, unknown>, text);
   return { ...parsed, modelSource: "openrouter", modelName: data.model ?? model };
 }
 

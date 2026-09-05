@@ -60,7 +60,8 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/dashboard", (_req, res) => {
   const cases = getCases();
   const recovered = cases.filter((item) => item.status === "recovered");
-  const active = cases.filter((item) => !["recovered", "escalated", "opted_out"].includes(item.status));
+  // Escalated and opted-out cases are still unrecovered revenue even though automation stopped.
+  const active = cases.filter((item) => item.status !== "recovered");
   const totalValue = cases.reduce((sum, item) => sum + item.amount, 0);
   const recoveredValue = recovered.reduce((sum, item) => sum + item.amount, 0);
   const baselineValue = cases.filter((item) => item.baselineRecovered).reduce((sum, item) => sum + item.amount, 0);
