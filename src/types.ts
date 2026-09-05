@@ -65,7 +65,14 @@ export interface DashboardData {
   recoveredByDay: { day: string; value: number }[];
   cases: RecoveryCase[];
   audit: AuditItem[];
-  integration: { razorpay: boolean; openai: boolean; mode: string };
+  integration: {
+    razorpay: boolean;
+    openrouter: boolean;
+    openai: boolean;
+    replyProvider: string;
+    replyModel: string;
+    mode: string;
+  };
 }
 
 export interface Policy {

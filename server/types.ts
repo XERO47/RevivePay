@@ -78,5 +78,6 @@ export interface ReplyClassification {
   promisedDate: string | null;
   confidence: number;
   summary: string;
-  modelSource: "openai" | "deterministic_fallback";
+  modelSource: "openrouter" | "openai" | "deterministic_fallback";
+  modelName?: string;
 }

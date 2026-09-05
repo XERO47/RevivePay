@@ -42,7 +42,66 @@ function fallbackClassify(text: string): ReplyClassification {
   return { intent: "general", promisedDate: null, confidence: 0.6, summary: "No high-confidence recovery intent detected.", modelSource: "deterministic_fallback" };
 }
 
+function parseJsonContent(content: string) {
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  return JSON.parse(cleaned) as Omit<ReplyClassification, "modelSource" | "modelName">;
+}
+
+async function classifyWithOpenRouter(text: string): Promise<ReplyClassification> {
+  const model = process.env.OPENROUTER_MODEL ?? "openrouter/free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": process.env.PUBLIC_APP_URL ?? "http://localhost:3001",
+      "X-Title": "RevivePay",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.1,
+      max_tokens: 250,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Classify a customer's reply to a merchant's payment-recovery message.",
+            "Never infer a promise-to-pay unless the customer clearly commits to payment.",
+            "Treat disputes, hardship, and opt-outs conservatively because they stop automation.",
+            "Use an ISO YYYY-MM-DD promisedDate only when a date can be resolved; otherwise null.",
+          ].join(" "),
+        },
+        { role: "user", content: text },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "recovery_reply", strict: true, schema: replySchema },
+      },
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 240)}`);
+  }
+  const data = await response.json() as {
+    model?: string;
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenRouter returned no classification content.");
+  return { ...parseJsonContent(content), modelSource: "openrouter", modelName: data.model ?? model };
+}
+
 export async function classifyReply(text: string): Promise<ReplyClassification> {
+  if (process.env.OPENROUTER_API_KEY) {
+    try {
+      return await classifyWithOpenRouter(text);
+    } catch (error) {
+      console.warn("OpenRouter classification failed; trying the next safe provider", error instanceof Error ? error.message : error);
+    }
+  }
+
   if (!process.env.OPENAI_API_KEY) return fallbackClassify(text);
 
   try {
@@ -67,7 +126,7 @@ export async function classifyReply(text: string): Promise<ReplyClassification> 
       },
     });
     const parsed = JSON.parse(response.output_text) as Omit<ReplyClassification, "modelSource">;
-    return { ...parsed, modelSource: "openai" };
+    return { ...parsed, modelSource: "openai", modelName: response.model };
   } catch (error) {
     console.warn("AI reply classification failed; using deterministic fallback", error instanceof Error ? error.message : error);
     return fallbackClassify(text);

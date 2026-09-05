@@ -10,7 +10,7 @@ The repository contains a complete deployable hackathon demo, not a static proto
 - Human approval for high-value actions
 - Razorpay Payment Links test-mode adapter
 - Signed webhook verification and event-ID deduplication
-- Structured OpenAI reply classification with a deterministic fail-safe fallback
+- OpenRouter free-model or OpenAI reply classification with a deterministic fail-safe fallback
 - Promise-to-pay, dispute, hardship, and opt-out stopping rules
 - Full decision and execution audit trail
 - Docker and Render deployment configuration
@@ -66,7 +66,20 @@ POST https://your-domain.example/api/webhooks/razorpay
 
 Useful events include `payment_link.paid`, `payment.captured`, `order.paid`, and `subscription.charged`. RevivePay validates `X-Razorpay-Signature`, requires `X-Razorpay-Event-Id`, and ignores duplicate event IDs. Payment Links carry the recovery case ID as their `reference_id` and in `notes.revive_case_id`.
 
-## OpenAI setup
+## OpenRouter setup (recommended for the demo)
+
+Create an OpenRouter API key and add it to `.env`:
+
+```dotenv
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=openrouter/free
+```
+
+`openrouter/free` automatically selects an available zero-cost model that supports the request. RevivePay records the actual model returned by OpenRouter in the simulator. If the router is rate-limited, unavailable, or returns malformed output, the application fails over to OpenAI when configured and then to the conservative local classifier.
+
+The key remains server-side and is never included in the browser bundle.
+
+## OpenAI setup (optional secondary provider)
 
 Set these variables to enable live customer-reply understanding:
 
@@ -75,7 +88,7 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5-mini
 ```
 
-The integration uses the Responses API with a strict JSON schema. If the request times out, fails, or has no key, a conservative local classifier handles the critical stop intents. The model only classifies and recommends; it never calls a money API directly.
+The OpenAI integration uses the Responses API with a strict JSON schema. Provider priority is OpenRouter → OpenAI → deterministic fallback. The model only classifies and recommends; it never calls a money API directly.
 
 ## Safety model
 
@@ -123,7 +136,7 @@ The included `render.yaml` defines a Docker web service, health check, environme
 1. Push this repository to GitHub.
 2. In Render, create a **Blueprint** from the repository.
 3. Set `PUBLIC_APP_URL` to the deployed URL.
-4. Add optional OpenAI and Razorpay test credentials.
+4. Add optional OpenRouter, OpenAI, and Razorpay test credentials.
 5. Deploy and verify `/api/health`.
 
 Any container platform with a persistent `/data` volume works. Without a volume, the app remains usable but resets to the seeded evaluation dataset after a restart.

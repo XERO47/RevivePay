@@ -162,7 +162,7 @@ function MerchantApp() {
           <div className="system-card">
             <div className="system-card-head"><span className="live-dot" />System operational</div>
             <div className="system-row"><span>Payments</span><strong>{data.integration.mode}</strong></div>
-            <div className="system-row"><span>Reply AI</span><strong>{data.integration.openai ? "OpenAI" : "Safe fallback"}</strong></div>
+            <div className="system-row"><span>Reply AI</span><strong>{data.integration.replyProvider}</strong></div>
           </div>
           <button className="reset-button" onClick={() => void reset()}><RotateCcw size={15} />Reset demo data</button>
           <div className="merchant">
@@ -210,7 +210,7 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
   const [detail, setDetail] = useState<{ case: RecoveryCase; actions: RecoveryAction[]; audit: AuditItem[] } | null>(null);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ intent: string; confidence: number; summary: string; modelSource: string } | null>(null);
+  const [result, setResult] = useState<{ intent: string; confidence: number; summary: string; modelSource: string; modelName?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async (nextCaseId = caseId) => {
@@ -231,7 +231,7 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
     setSending(true);
     setError(null);
     try {
-      const response = await request<{ classification: { intent: string; confidence: number; summary: string; modelSource: string } }>(`/api/cases/${caseId}/reply`, {
+      const response = await request<{ classification: { intent: string; confidence: number; summary: string; modelSource: string; modelName?: string } }>(`/api/cases/${caseId}/reply`, {
         method: "POST",
         body: JSON.stringify({ text }),
       });
@@ -257,8 +257,8 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
     <>
       <section className="page-heading compact simulator-heading">
         <div><span className="eyebrow">Interactive demo lab</span><h1>Customer response simulator</h1><p>Act as the customer and watch the recovery agent interpret, decide, and stop safely.</p></div>
-        <div className={`ai-engine-badge ${data.integration.openai ? "connected" : "fallback"}`}>
-          <Bot size={17} /><div><span>Reply intelligence</span><strong>{data.integration.openai ? "OpenAI Responses API" : "Deterministic safety fallback"}</strong></div><i />
+        <div className={`ai-engine-badge ${data.integration.openrouter || data.integration.openai ? "connected" : "fallback"}`}>
+          <Bot size={17} /><div><span>Reply intelligence</span><strong>{data.integration.openrouter ? "OpenRouter free router" : data.integration.openai ? "OpenAI Responses API" : "Deterministic safety fallback"}</strong></div><i />
         </div>
       </section>
 
@@ -306,7 +306,7 @@ function CustomerSimulator({ data, onChanged }: { data: DashboardData; onChanged
           <article className="panel inspector-card">
             <div className="simulator-section-head"><div><span className="panel-kicker">Live reasoning output</span><h2>Agent interpretation</h2></div><Sparkles size={18} /></div>
             {result ? <>
-              <div className="intent-result"><span>Detected intent</span><strong>{result.intent.replaceAll("_", " ")}</strong><div><i style={{ width: `${result.confidence * 100}%` }} /></div><small>{Math.round(result.confidence * 100)}% confidence · {result.modelSource.replaceAll("_", " ")}</small></div>
+              <div className="intent-result"><span>Detected intent</span><strong>{result.intent.replaceAll("_", " ")}</strong><div><i style={{ width: `${result.confidence * 100}%` }} /></div><small>{Math.round(result.confidence * 100)}% confidence · {result.modelName ?? result.modelSource.replaceAll("_", " ")}</small></div>
               <p className="intent-summary">{result.summary}</p>
               <OutcomeExplanation intent={result.intent} />
             </> : <div className="inspector-empty"><Bot size={25} /><strong>Waiting for a reply</strong><span>The classifier output and resulting guardrail decision will appear here.</span></div>}

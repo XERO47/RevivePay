@@ -91,7 +91,10 @@ app.get("/api/dashboard", (_req, res) => {
     audit: getAudit(),
     integration: {
       razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
+      openrouter: Boolean(process.env.OPENROUTER_API_KEY),
       openai: Boolean(process.env.OPENAI_API_KEY),
+      replyProvider: process.env.OPENROUTER_API_KEY ? "OpenRouter" : process.env.OPENAI_API_KEY ? "OpenAI" : "Safe fallback",
+      replyModel: process.env.OPENROUTER_API_KEY ? (process.env.OPENROUTER_MODEL ?? "openrouter/free") : process.env.OPENAI_API_KEY ? (process.env.OPENAI_MODEL ?? "gpt-5-mini") : "deterministic rules",
       mode: process.env.RAZORPAY_KEY_ID ? "Razorpay test mode" : "Safe demo adapter",
     },
   });
